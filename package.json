@@ -1,0 +1,25 @@
+{
+  "name": "backoffice",
+  "version": "1.0.0",
+  "description": "Backoffice",
+  "main": "app.js",
+  "license": "UNLICENSED",
+  "private": true,
+  "author": {
+    "name": ""
+  },
+  "dependencies": {
+    "axios": "^1.4.0",
+    "body-parser": "^1.20.1",
+    "bullmq": "^3.4.2",
+    "csv-parser": "^3.0.0",
+    "ftp": "^0.3.10",
+    "log4js": "^6.7.1",
+    "minimist": "^1.2.7",
+    "moment": "^2.29.4",
+    "mssql": "^7.3.5",
+    "path": "^0.12.7",
+    "ssh2-sftp-client": "^9.1.0",
+    "truecallerjs": "^1.1.5"
+  }
+}
