@@ -5,35 +5,35 @@ const sql = require('mssql');
 const log4js = require('log4js');
 const SftpClient = require('ssh2-sftp-client');
 
-// Configuración Logs
+// ConfiguraciÃ³n Logs
 log4js.configure(path.resolve(__dirname, './config/log4js.json'));
 
 const logger = log4js.getLogger("ProcessCSVToTable");
 
-// Configuración SQL Server
+// ConfiguraciÃ³n SQL Server
 const sqlConfig = require(path.resolve(__dirname, './config/mssql.js'));
 const dbConn = new sql.ConnectionPool(sqlConfig.databaseSippy);
 
-// Configuración SFTP
+// ConfiguraciÃ³n SFTP
 const sftpConfig = require(path.resolve(__dirname, './config/sftpConfig.js'));
 
 // Ruta del archivo .csv en el servidor SFTP
-let csvFilePath = '' 
+let csvFilePath = '' ///  Data/Call_Records_from_CCS_2023-04-01_00_00_00_to_2023-05-01_00_00_00.csv;
 let localFilePath = ''
 let remoteFilePath = ''
 
-// Función para establecer la conexión a la base de datos
+// FunciÃ³n para establecer la conexiÃ³n a la base de datos
 async function connectToDatabase() {
     try {
         await dbConn.connect();
-        logger.info('Conexión establecida correctamente.');
+        logger.info('ConexiÃ³n establecida correctamente.');
     } catch (error) {
         logger.error('Error al conectar a la base de datos:', error);
     }
 }
 
 
-// Función para obtener el nombre del archivo CSV automáticamente desde el servidor SFTP
+// FunciÃ³n para obtener el nombre del archivo CSV automÃ¡ticamente desde el servidor SFTP
 async function getCSVFileNameFromSFTP() {
     const sftp = new SftpClient();
 
@@ -43,13 +43,13 @@ async function getCSVFileNameFromSFTP() {
                 return sftp.list(sftpConfig.remotePath); // Obtener la lista de archivos en la ruta remota
             })
             .then((files) => {
-                // Busco por tipo de archivo  considerando que siempre será .csv
+                // Busco por tipo de archivo  considerando que siempre serÃ¡ .csv
                 const csvFile = files.find(file => file.name.endsWith('.csv'));
 
                 if (csvFile) {
                     resolve(csvFile.name);
                 } else {
-                    reject(new Error('No se encontró ningún archivo CSV en el servidor SFTP.' + sftpConfig.remotePath));
+                    reject(new Error('No se encontrÃ³ ningÃºn archivo CSV en el servidor SFTP.' + sftpConfig.remotePath));
                 }
             })
             .catch((error) => {
@@ -63,7 +63,7 @@ async function getCSVFileNameFromSFTP() {
 }
 
 
-// Función para descargar el archivo CSV desde el servidor SFTP
+// FunciÃ³n para descargar el archivo CSV desde el servidor SFTP
 async function downloadCSVFromSFTP() {
     const sftp = new SftpClient();
 
@@ -90,7 +90,7 @@ async function downloadCSVFromSFTP() {
 
 
 
-// Función principal para leer el archivo .csv y procesar los datos
+// FunciÃ³n principal para leer el archivo .csv y procesar los datos
 async function processCSVFile(csvFilePath) {
     const data = [];
 
@@ -100,20 +100,24 @@ async function processCSVFile(csvFilePath) {
             //Me falta agregar las columnas  finales , pero con esto puedo ir avanzando
             const rowData = {};
 
-            // Agregar todas las columnas al objeto JSON
-            for (const column in row) {
-                rowData[column] = row[column];
+            // Verificar el valor de 'Billing Prefix'
+            if (row['Billing Prefix'] === 'onnet_in') {
+                rowData.columna3 = row.CLD; // Insertar 'CLD' si cumple la condiciÃ³n
+                rowData.columna4 = row.CLI
+            } else {
+                rowData.columna3 = row.CLI; // Insertar 'CLI' si no cumple la condiciÃ³n
+                rowData.columna4 = row.CLD
             }
 
-            data.push({
-                columna1: row.Caller,
-                columna2: row.Country,
-                columna3: row.CLI,
-                columna4: row['Duration, sec'],
-                columna5: row['Connect Time'],
-                columna6: row['Disconnect Time'],
-                columna7: JSON.stringify(rowData)
-            });
+            // Agregar las demÃ¡s columnas al objeto JSON
+            rowData.columna1 = row.Caller;
+            rowData.columna2 = row.Country;
+            rowData.columna5 = row['Duration, sec'];
+            rowData.columna6 = row['Connect Time'];
+            rowData.columna7 = row['Disconnect Time'];
+            rowData.columna8 = JSON.stringify(row);
+
+            data.push(rowData);
         })
         .on('end', async () => {
             await connectToDatabase();
@@ -123,7 +127,6 @@ async function processCSVFile(csvFilePath) {
 }
 
 
-// Función para insertar los datos en la tabla
 async function insertDataToTable(data) {
     try {
         const transaction = dbConn.transaction();
@@ -132,19 +135,33 @@ async function insertDataToTable(data) {
         const request = transaction.request();
         for (const row of data) {
             await request.query(`
-        INSERT INTO CDR (Trunk, Country, CLI, Duration, ConnectTime, DisconnectTime, Data )
-        VALUES ('${row.columna1}', '${row.columna2}', '${row.columna3}', '${row.columna4}', '${row.columna5}', '${row.columna6}', '${row.columna7}' )
-      `);
+            MERGE INTO CDR AS target
+            USING (
+                VALUES ('${row.columna1}', '${row.columna2}', '${row.columna3}', '${row.columna4}', '${row.columna5}', '${row.columna6}', '${row.columna7}', '${row.columna8}')
+            ) AS source (Trunk, Country, DID, Phone, Duration, ConnectTime, DisconnectTime, Data)
+            ON target.DID = source.DID AND target.Phone = source.Phone AND target.ConnectTime = source.ConnectTime
+            WHEN MATCHED THEN
+                UPDATE SET
+                target.Trunk = source.Trunk,
+                target.Country = source.Country,
+                target.Duration = source.Duration,
+                target.DisconnectTime = source.DisconnectTime,
+                target.Data = source.Data
+            WHEN NOT MATCHED THEN
+                INSERT (Trunk, Country, DID, Phone, Duration, ConnectTime, DisconnectTime, Data)
+                VALUES (source.Trunk, source.Country, source.DID, source.Phone, source.Duration, source.ConnectTime, source.DisconnectTime, source.Data);
+            `);
         }
 
         await transaction.commit();
-        logger.info('Datos insertados correctamente.');
+        logger.info('Datos insertados o actualizados correctamente.');
     } catch (error) {
-        logger.error('Error al insertar los datos:', error);
+        logger.error('Error al insertar o actualizar los datos:', error);
     }
 }
 
-// Función para mover el archivo CSV a otra carpeta en el servidor SFTP
+
+// FunciÃ³n para mover el archivo CSV a otra carpeta en el servidor SFTP
 async function moveCSVToProcessedFolderOnSFTP(csvFilePath) {
     const sftp = new SftpClient();
 
@@ -177,7 +194,7 @@ async function moveCSVToProcessedFolderOnSFTP(csvFilePath) {
 
 // ...
 
-// Ejecuta el proceso de obtención del nombre del archivo CSV  , Insertar datos y por ultimo mover el archivo a procesado
+// Ejecuta el proceso de obtenciÃ³n del nombre del archivo CSV  , Insertar datos y por ultimo mover el archivo a procesado
 getCSVFileNameFromSFTP()
     .then((fileName) => {
         csvFilePath = sftpConfig.remotePath + `${fileName}`;
