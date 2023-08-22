@@ -70,8 +70,8 @@ async function downloadCSVFromSFTP() {
     return new Promise((resolve, reject) => {
         sftp.connect(sftpConfig)
             .then(() => {
-                 localFilePath = path.join(__dirname, 'temp/Data/', path.basename(csvFilePath));
-                 remoteFilePath = sftpConfig.remotePath + '/' + path.basename(csvFilePath);
+                localFilePath = path.join(__dirname, 'temp/Data/', path.basename(csvFilePath));
+                remoteFilePath = sftpConfig.remotePath + '/' + path.basename(csvFilePath);
 
                 return sftp.get(remoteFilePath, localFilePath);
             })
@@ -82,7 +82,7 @@ async function downloadCSVFromSFTP() {
             })
             .catch((error) => {
                 sftp.end();
-                logger.error('Error al descargar el archivo CSV:', error + ' Remote path'+ remoteFilePath );
+                logger.error('Error al descargar el archivo CSV:', error + ' Remote path' + remoteFilePath);
                 reject(error);
             });
     });
@@ -133,25 +133,51 @@ async function insertDataToTable(data) {
         await transaction.begin();
 
         const request = transaction.request();
+
+        // Crear la tabla temporal global
+        await request.query(`
+            CREATE TABLE ##TempCDR (
+                Trunk VARCHAR(255),
+                Country VARCHAR(255),
+                DID VARCHAR(255),
+                Phone VARCHAR(255),
+                Duration INT,
+                ConnectTime DATETIME,
+                DisconnectTime DATETIME,
+                Data NVARCHAR(4000)
+            );
+        `);
+
+        // Llenar la tabla temporal global dentro de la transacción
         for (const row of data) {
-            await request.query(`
-            MERGE INTO CDR AS target
-            USING (
-                VALUES ('${row.columna1}', '${row.columna2}', '${row.columna3}', '${row.columna4}', '${row.columna5}', '${row.columna6}', '${row.columna7}', '${row.columna8}')
-            ) AS source (Trunk, Country, DID, Phone, Duration, ConnectTime, DisconnectTime, Data)
-            ON target.DID = source.DID AND target.Phone = source.Phone AND target.ConnectTime = source.ConnectTime
-            WHEN MATCHED THEN
-                UPDATE SET
-                target.Trunk = source.Trunk,
-                target.Country = source.Country,
-                target.Duration = source.Duration,
-                target.DisconnectTime = source.DisconnectTime,
-                target.Data = source.Data
-            WHEN NOT MATCHED THEN
-                INSERT (Trunk, Country, DID, Phone, Duration, ConnectTime, DisconnectTime, Data)
-                VALUES (source.Trunk, source.Country, source.DID, source.Phone, source.Duration, source.ConnectTime, source.DisconnectTime, source.Data);
+            await transaction.request().query(`
+                INSERT INTO ##TempCDR (Trunk, Country, DID, Phone, Duration, ConnectTime, DisconnectTime, Data)
+                VALUES ('${row.columna1}', '${row.columna2}', '${row.columna3}', '${row.columna4}', ${row.columna5}, '${row.columna6}', '${row.columna7}', '${row.columna8}');
             `);
         }
+
+        // Merge con la tabla principal
+        await transaction.request().query(`
+            MERGE INTO CDR AS target
+USING (
+    SELECT DISTINCT DID, Phone, ConnectTime, Trunk, Country, Duration, DisconnectTime, Data
+    FROM ##TempCDR
+) AS source
+ON target.DID = source.DID AND target.Phone = source.Phone AND target.ConnectTime = source.ConnectTime 
+WHEN MATCHED THEN
+    UPDATE SET
+    target.Trunk = source.Trunk,
+    target.Country = source.Country,
+    target.Duration = source.Duration,
+    target.DisconnectTime = source.DisconnectTime,
+    target.Data = source.Data
+WHEN NOT MATCHED THEN
+    INSERT (Trunk, Country, DID, Phone, Duration, ConnectTime, DisconnectTime, Data)
+    VALUES (source.Trunk, source.Country, source.DID, source.Phone, source.Duration, source.ConnectTime, source.DisconnectTime, source.Data);
+        `);
+
+        // Eliminar la tabla temporal global (opcional, ya que se eliminará automáticamente al finalizar la sesión)
+        // await transaction.request().query(`DROP TABLE ##TempCDR;`);
 
         await transaction.commit();
         logger.info('Datos insertados o actualizados correctamente.');
@@ -159,6 +185,8 @@ async function insertDataToTable(data) {
         logger.error('Error al insertar o actualizar los datos:', error);
     }
 }
+
+
 
 
 // Función para mover el archivo CSV a otra carpeta en el servidor SFTP
@@ -172,7 +200,7 @@ async function moveCSVToProcessedFolderOnSFTP(csvFilePath) {
                 let remoteProcessedFilePath = path.join(remoteProcessedFolderPath, path.basename(csvFilePath));
 
                 //Como estoy en window hago un replace  del las diagonales
-               // remoteProcessedFilePath = path.posix.normalize(remoteProcessedFilePath); // remoteProcessedFilePath.replace('/', '\\')
+                // remoteProcessedFilePath = path.posix.normalize(remoteProcessedFilePath); // remoteProcessedFilePath.replace('/', '\\')
                 //remoteProcessedFolderPath = path.posix.normalize(remoteProcessedFolderPath); //  remoteProcessedFolderPath.replace('/', '\\')
 
                 return sftp.mkdir(remoteProcessedFolderPath, true) // Crea la carpeta de destino (si no existe) 
@@ -199,7 +227,7 @@ getCSVFileNameFromSFTP()
     .then((fileName) => {
         csvFilePath = sftpConfig.remotePath + `${fileName}`;
 
-       // LocalFilePath = path.resolve(__dirname, 'Data', fileName);
+        // LocalFilePath = path.resolve(__dirname, 'Data', fileName);
         return downloadCSVFromSFTP(csvFilePath);
     })
     .then((localFilePath) => {
@@ -216,4 +244,3 @@ getCSVFileNameFromSFTP()
 
 
 
-            
